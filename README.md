@@ -23,4 +23,4 @@ Useful flags:
 - `--merge` - merge into an existing output ZIP
 - `--timestamped-names` - write member names like `users_YYYYMMDD_HHMMSS.json`
 - `--collect-laps` - request LAPS expiration attributes
-- `--collect-acls --parse-acls` - request and parse ACLs, requires `pip3 install bloodhound`
+- `--acl` - request and parse ACLs, requires `pip3 install bloodhound`
