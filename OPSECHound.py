@@ -1818,13 +1818,18 @@ def convert(
     return converted
 
 
-def wrap_bh_json(data_type: str, objects: List[Dict[str, Any]], bh_version: int) -> Dict[str, Any]:
+def wrap_bh_json(
+    data_type: str,
+    objects: List[Dict[str, Any]],
+    bh_version: int,
+    collection_methods: int = DEFAULT_COLLECTION_METHODS,
+) -> Dict[str, Any]:
     return {
         "data": objects,
         "meta": {
             "type": data_type,
             "count": len(objects),
-            "methods": DEFAULT_COLLECTION_METHODS,
+            "methods": collection_methods,
             "version": bh_version,
             "collectorversion": COLLECTOR_VERSION,
         },
@@ -1924,7 +1929,13 @@ def build_zip_payload(
     return payload
 
 
-def write_bh_zip(zip_path: str, payload: Dict[str, List[Dict[str, Any]]], bh_version: int, timestamped_names: bool = False) -> str:
+def write_bh_zip(
+    zip_path: str,
+    payload: Dict[str, List[Dict[str, Any]]],
+    bh_version: int,
+    timestamped_names: bool = False,
+    collection_methods: int = DEFAULT_COLLECTION_METHODS,
+) -> str:
     ensure_parent_dir(zip_path)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -1935,7 +1946,11 @@ def write_bh_zip(zip_path: str, payload: Dict[str, List[Dict[str, Any]]], bh_ver
 
             objects = payload[data_type]
             member_name = f"{data_type}_{timestamp}.json" if timestamped_names else f"{data_type}.json"
-            body = json.dumps(wrap_bh_json(data_type, objects, bh_version), indent=2, ensure_ascii=False)
+            body = json.dumps(
+                wrap_bh_json(data_type, objects, bh_version, collection_methods=collection_methods),
+                indent=2,
+                ensure_ascii=False,
+            )
             archive.writestr(member_name, body)
             print(f"[+] Wrote {len(objects)} {data_type} -> {zip_path}:{member_name}")
 
@@ -2089,7 +2104,7 @@ def build_attribute_list(args: argparse.Namespace) -> List[str]:
     if args.collect_laps:
         attributes.extend(OPTIONAL_LAPS_ATTRIBUTES)
 
-    if args.collect_acls:
+    if args.acl or args.collect_acls or args.parse_acls:
         attributes.extend(OPTIONAL_ACL_ATTRIBUTES)
 
     return list(dict.fromkeys(attributes))
@@ -2248,16 +2263,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bh-version", type=int, default=BH_VERSION, help="BloodHound JSON meta version. Default follows current SharpHound-style output.")
     parser.add_argument("--all-properties", action="store_true", help="Include all LDAP properties collected except raw security descriptors and schema-only fields.")
     parser.add_argument("--collect-laps", action="store_true", help="Try to collect classic and Windows LAPS expiration attributes.")
-    parser.add_argument("--collect-acls", action="store_true", help="Request nTSecurityDescriptor from LDAP. This may be noisy and permission-sensitive.")
-    parser.add_argument("--parse-acls", action="store_true", help="Parse collected ACLs into BloodHound Aces. Requires: pip3 install bloodhound.")
+    parser.add_argument("--acl", action="store_true", help="Collect and parse nTSecurityDescriptor into BloodHound Aces. Requires: pip3 install bloodhound.")
+    parser.add_argument("--collect-acls", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--parse-acls", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--skip-schema", action="store_true", help="Do not run the schemaIDGUID query in BOFHound preset mode.")
     parser.add_argument("--collect-schema", action="store_true", help="Also collect schemaIDGUID map when running a custom LDAP filter.")
     parser.add_argument("--no-default-principals", action="store_true", help="Do not add BOFHound-style default well-known users/groups.")
 
     args = parser.parse_args()
 
-    if args.parse_acls:
+    if args.acl or args.collect_acls or args.parse_acls:
+        args.acl = True
         args.collect_acls = True
+        args.parse_acls = True
 
     return args
 
@@ -2293,6 +2311,9 @@ def main() -> None:
         sys.exit(1)
 
     domain = normalize_domain(args.domain, args.base_dn)
+    if args.acl and not (args.bofhound or not args.ldapquery):
+        args.collect_schema = True
+
     plan = build_search_plan(args, discovered)
 
     conn = connect_ldap(args)
@@ -2310,7 +2331,14 @@ def main() -> None:
 
         selected_types = args.types or BOFHOUND_OUTPUT_TYPES
         payload = build_zip_payload(args.out, converted, selected_types, merge=args.merge, write_empty=args.write_empty)
-        archive_path = write_bh_zip(args.out, payload, bh_version=args.bh_version, timestamped_names=args.timestamped_names)
+        collection_methods = DEFAULT_COLLECTION_METHODS | (COLLECTION_METHOD_ACL if args.acl else 0)
+        archive_path = write_bh_zip(
+            args.out,
+            payload,
+            bh_version=args.bh_version,
+            timestamped_names=args.timestamped_names,
+            collection_methods=collection_methods,
+        )
 
         print("[+] Done.")
         print(f"[+] BloodHound archive: {archive_path}")
