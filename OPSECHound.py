@@ -79,6 +79,12 @@ DEFAULT_COLLECTION_METHODS = (
     | COLLECTION_METHOD_SPN_TARGETS
 )
 
+LDAP_SERVER_SD_FLAGS_OID = "1.2.840.113556.1.4.801"
+OWNER_SECURITY_INFORMATION = 0x1
+GROUP_SECURITY_INFORMATION = 0x2
+DACL_SECURITY_INFORMATION = 0x4
+ACL_SECURITY_INFORMATION = OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION
+
 BOFHOUND_OUTPUT_TYPES = ["domains", "computers", "users", "groups", "ous", "gpos"]
 SUPPORTED_TYPES = BOFHOUND_OUTPUT_TYPES + ["containers"]
 
@@ -1957,6 +1963,39 @@ def write_bh_zip(
     return zip_path
 
 
+def ber_encode_length(length: int) -> bytes:
+    if length < 0x80:
+        return bytes([length])
+
+    raw = length.to_bytes((length.bit_length() + 7) // 8, byteorder="big")
+    return bytes([0x80 | len(raw)]) + raw
+
+
+def ber_encode_integer(value: int) -> bytes:
+    raw = value.to_bytes(max(1, (value.bit_length() + 7) // 8), byteorder="big")
+    if raw[0] & 0x80:
+        raw = b"\x00" + raw
+    return b"\x02" + ber_encode_length(len(raw)) + raw
+
+
+def ber_encode_sequence(value: bytes) -> bytes:
+    return b"\x30" + ber_encode_length(len(value)) + value
+
+
+def security_descriptor_control(flags: int = ACL_SECURITY_INFORMATION) -> Tuple[str, bool, bytes]:
+    return (
+        LDAP_SERVER_SD_FLAGS_OID,
+        True,
+        ber_encode_sequence(ber_encode_integer(flags)),
+    )
+
+
+def search_controls_for_spec(spec: SearchSpec) -> Optional[List[Tuple[str, bool, bytes]]]:
+    if any(attr.lower() == "ntsecuritydescriptor" for attr in spec.attributes):
+        return [security_descriptor_control()]
+    return None
+
+
 def build_server(args: argparse.Namespace) -> Any:
     require_ldap3()
     use_ssl = bool(args.ldaps)
@@ -2171,6 +2210,7 @@ def collect_entries_for_spec(conn: Any, args: argparse.Namespace, spec: SearchSp
 
     try:
         paged_cookie = None
+        request_controls = search_controls_for_spec(spec)
 
         while True:
             conn.search(
@@ -2180,6 +2220,7 @@ def collect_entries_for_spec(conn: Any, args: argparse.Namespace, spec: SearchSp
                 attributes=spec.attributes,
                 paged_size=args.page_size,
                 paged_cookie=paged_cookie,
+                controls=request_controls,
             )
 
             result_code = conn.result.get("result")
@@ -2196,8 +2237,8 @@ def collect_entries_for_spec(conn: Any, args: argparse.Namespace, spec: SearchSp
 
             entries.extend(entry_to_raw_object(entry) for entry in conn.entries)
 
-            controls = conn.result.get("controls", {})
-            paged_control = controls.get("1.2.840.113556.1.4.319", {})
+            response_controls = conn.result.get("controls", {})
+            paged_control = response_controls.get("1.2.840.113556.1.4.319", {})
             value = paged_control.get("value", {})
             paged_cookie = value.get("cookie")
 
@@ -2276,6 +2317,7 @@ def parse_args() -> argparse.Namespace:
         args.acl = True
         args.collect_acls = True
         args.parse_acls = True
+        args.collect_schema = True
 
     return args
 
@@ -2311,9 +2353,6 @@ def main() -> None:
         sys.exit(1)
 
     domain = normalize_domain(args.domain, args.base_dn)
-    if args.acl and not (args.bofhound or not args.ldapquery):
-        args.collect_schema = True
-
     plan = build_search_plan(args, discovered)
 
     conn = connect_ldap(args)
