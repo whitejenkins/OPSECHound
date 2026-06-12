@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
-OPSECHound - OPSEC-friendly LDAP collector for BOFHound/BloodHound JSON.
+OPSECHound - OPSEC-friendly LDAP collector for BloodHound JSON.
 
-The original BOFHound parses LDAP result logs. OPSECHound keeps the same idea
-of operator-controlled LDAP collection, but performs the LDAP queries itself and
-then runs a BOFHound-like post-processing pass:
+OPSECHound performs operator-controlled LDAP queries and converts the results
+into BloodHound-compatible JSON:
 
 - users, computers, groups, domains, OUs, GPOs, and optional containers
 - group membership from member, memberOf, and primaryGroupID
@@ -85,8 +84,8 @@ GROUP_SECURITY_INFORMATION = 0x2
 DACL_SECURITY_INFORMATION = 0x4
 ACL_SECURITY_INFORMATION = OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION
 
-BOFHOUND_OUTPUT_TYPES = ["domains", "computers", "users", "groups", "ous", "gpos"]
-SUPPORTED_TYPES = BOFHOUND_OUTPUT_TYPES + ["containers"]
+DEFAULT_OUTPUT_TYPES = ["domains", "computers", "users", "groups", "ous", "gpos"]
+SUPPORTED_TYPES = DEFAULT_OUTPUT_TYPES + ["containers"]
 
 GROUP_SAM_TYPES = {268435456, 268435457, 536870912, 536870913}
 USER_SAM_TYPES = {805306368}
@@ -1589,7 +1588,7 @@ def parse_acl_edges(converted: Dict[str, List[Dict[str, Any]]], raw_by_oid: Dict
             ace_applies,
         )
     except ImportError:
-        print("[!] --parse-acls requested, but the bloodhound package is not installed.", file=sys.stderr)
+        print("[!] --acl requested, but the bloodhound package is not installed.", file=sys.stderr)
         print("    Install optional support with: pip3 install bloodhound", file=sys.stderr)
         return
 
@@ -1758,7 +1757,7 @@ def convert(
     base_dn: str,
     all_properties: bool = False,
     default_principals: bool = True,
-    parse_acls: bool = False,
+    acl: bool = False,
 ) -> Dict[str, List[Dict[str, Any]]]:
     raw_objects = merge_raw_objects(raw_objects, domain)
     inferred_domain_sid = infer_domain_sid(raw_objects, domain)
@@ -1818,7 +1817,7 @@ def convert(
     link_gpos(converted, raw_by_oid, domain)
     resolve_delegation_targets(converted)
 
-    if parse_acls:
+    if acl:
         parse_acl_edges(converted, raw_by_oid, build_schema_guid_map(raw_objects), domain)
 
     return converted
@@ -2143,7 +2142,7 @@ def build_attribute_list(args: argparse.Namespace) -> List[str]:
     if args.collect_laps:
         attributes.extend(OPTIONAL_LAPS_ATTRIBUTES)
 
-    if args.acl or args.collect_acls or args.parse_acls:
+    if args.acl:
         attributes.extend(OPTIONAL_ACL_ATTRIBUTES)
 
     return list(dict.fromkeys(attributes))
@@ -2153,7 +2152,7 @@ def schema_attribute_list(args: argparse.Namespace) -> List[str]:
     return ["name", "lDAPDisplayName", "schemaIDGUID"]
 
 
-def bofhound_filter() -> str:
+def default_collection_filter() -> str:
     return (
         "(|"
         "(objectClass=domainDNS)"
@@ -2174,9 +2173,9 @@ def build_search_plan(args: argparse.Namespace, discovered: Dict[str, Optional[s
     attributes = build_attribute_list(args)
     plan: List[SearchSpec] = []
 
-    use_preset = args.bofhound or not args.ldapquery
+    use_preset = not args.ldapquery
     if use_preset:
-        plan.append(SearchSpec("bofhound-main", args.base_dn, bofhound_filter(), SUBTREE, attributes))
+        plan.append(SearchSpec("default-main", args.base_dn, default_collection_filter(), SUBTREE, attributes))
 
         schema_dn = discovered.get("schema_dn")
         if not args.skip_schema and schema_dn:
@@ -2271,12 +2270,12 @@ def collect_entries(conn: Any, args: argparse.Namespace, plan: Sequence[SearchSp
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="BOFHound-style BloodHound JSON collector using live LDAP queries")
+    parser = argparse.ArgumentParser(description="BloodHound JSON collector using live LDAP queries")
 
     parser.add_argument(
         "ldapquery",
         nargs="?",
-        help="Optional custom LDAP filter. If omitted, OPSECHound runs a BOFHound-style multi-object collection preset.",
+        help="Optional custom LDAP filter. If omitted, OPSECHound runs a multi-object collection preset.",
     )
 
     parser.add_argument("--user", help='LDAP username, e.g. "EXAMPLE\\user" or "user@example.local"')
@@ -2294,29 +2293,23 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--timeout", type=int, default=15, help="LDAP timeout in seconds")
     parser.add_argument("--page-size", type=int, default=500, help="LDAP paged search size")
-    parser.add_argument("--out", default="./bloodhound_bofhound.zip", help="Output ZIP path. If .zip is omitted, it will be added automatically.")
+    parser.add_argument("--out", default="./bloodhound_opsechound.zip", help="Output ZIP path. If .zip is omitted, it will be added automatically.")
 
-    parser.add_argument("--bofhound", action="store_true", help="Run the BOFHound-style collection preset even if a custom LDAP filter is supplied.")
     parser.add_argument("--types", nargs="+", choices=SUPPORTED_TYPES, help="Only write selected BloodHound object types.")
     parser.add_argument("--merge", action="store_true", help="Merge with existing JSON files inside --out ZIP instead of replacing them.")
     parser.add_argument("--write-empty", action="store_true", help="Write empty JSON members too. By default empty object types are skipped.")
-    parser.add_argument("--timestamped-names", action="store_true", help="Name ZIP members like BOFHound does, e.g. users_YYYYMMDD_HHMMSS.json.")
+    parser.add_argument("--timestamped-names", action="store_true", help="Name ZIP members with timestamps, e.g. users_YYYYMMDD_HHMMSS.json.")
     parser.add_argument("--bh-version", type=int, default=BH_VERSION, help="BloodHound JSON meta version. Default follows current SharpHound-style output.")
     parser.add_argument("--all-properties", action="store_true", help="Include all LDAP properties collected except raw security descriptors and schema-only fields.")
     parser.add_argument("--collect-laps", action="store_true", help="Try to collect classic and Windows LAPS expiration attributes.")
     parser.add_argument("--acl", action="store_true", help="Collect and parse nTSecurityDescriptor into BloodHound Aces. Requires: pip3 install bloodhound.")
-    parser.add_argument("--collect-acls", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--parse-acls", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--skip-schema", action="store_true", help="Do not run the schemaIDGUID query in BOFHound preset mode.")
+    parser.add_argument("--skip-schema", action="store_true", help="Do not run the schemaIDGUID query in preset mode.")
     parser.add_argument("--collect-schema", action="store_true", help="Also collect schemaIDGUID map when running a custom LDAP filter.")
-    parser.add_argument("--no-default-principals", action="store_true", help="Do not add BOFHound-style default well-known users/groups.")
+    parser.add_argument("--no-default-principals", action="store_true", help="Do not add default well-known users/groups.")
 
     args = parser.parse_args()
 
-    if args.acl or args.collect_acls or args.parse_acls:
-        args.acl = True
-        args.collect_acls = True
-        args.parse_acls = True
+    if args.acl:
         args.collect_schema = True
 
     return args
@@ -2327,7 +2320,7 @@ def main() -> None:
     args.out = normalize_zip_path(args.out)
 
     discovered: Dict[str, Optional[str]] = {}
-    preset_mode = args.bofhound or not args.ldapquery
+    preset_mode = not args.ldapquery
     needs_schema_dn = (preset_mode and not args.skip_schema) or (not preset_mode and args.collect_schema)
     should_discover = args.discover or not args.base_dn or not args.domain or needs_schema_dn
     if should_discover:
@@ -2365,10 +2358,10 @@ def main() -> None:
             args.base_dn,
             all_properties=args.all_properties,
             default_principals=not args.no_default_principals,
-            parse_acls=args.parse_acls,
+            acl=args.acl,
         )
 
-        selected_types = args.types or BOFHOUND_OUTPUT_TYPES
+        selected_types = args.types or DEFAULT_OUTPUT_TYPES
         payload = build_zip_payload(args.out, converted, selected_types, merge=args.merge, write_empty=args.write_empty)
         collection_methods = DEFAULT_COLLECTION_METHODS | (COLLECTION_METHOD_ACL if args.acl else 0)
         archive_path = write_bh_zip(
