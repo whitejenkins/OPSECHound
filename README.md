@@ -19,7 +19,6 @@ If no LDAP filter is supplied, the tool runs the default preset for domains, use
 Useful flags:
 
 - `--types users groups computers` - write only selected BloodHound object files
-- `--merge` - merge into an existing output ZIP
 - `--timestamped-names` - write member names like `users_YYYYMMDD_HHMMSS.json`
 - `--collect-laps` - request LAPS expiration attributes
 - `--acl` - request and parse ACLs, requires `pip3 install bloodhound`

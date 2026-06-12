@@ -1905,12 +1905,11 @@ def build_zip_payload(
     zip_path: str,
     converted: Dict[str, List[Dict[str, Any]]],
     selected_types: List[str],
-    merge: bool = False,
     write_empty: bool = False,
 ) -> Dict[str, List[Dict[str, Any]]]:
     payload: Dict[str, List[Dict[str, Any]]] = {}
 
-    if merge and os.path.exists(zip_path):
+    if os.path.exists(zip_path):
         for data_type in SUPPORTED_TYPES:
             existing_objects = read_existing_bh_objects_from_zip(zip_path, data_type)
             if existing_objects:
@@ -1918,12 +1917,8 @@ def build_zip_payload(
 
     for data_type in selected_types:
         new_objects = converted.get(data_type, [])
-
-        if merge:
-            old_objects = payload.get(data_type, [])
-            final_objects = merge_bh_objects(old_objects, new_objects)
-        else:
-            final_objects = new_objects
+        old_objects = payload.get(data_type, [])
+        final_objects = merge_bh_objects(old_objects, new_objects)
 
         if final_objects or write_empty:
             payload[data_type] = final_objects
@@ -2293,10 +2288,9 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--timeout", type=int, default=15, help="LDAP timeout in seconds")
     parser.add_argument("--page-size", type=int, default=500, help="LDAP paged search size")
-    parser.add_argument("--out", default="./bloodhound_opsechound.zip", help="Output ZIP path. If .zip is omitted, it will be added automatically.")
+    parser.add_argument("--out", default="./bloodhound_opsechound.zip", help="Output ZIP path. Existing archives are merged automatically. If .zip is omitted, it will be added.")
 
     parser.add_argument("--types", nargs="+", choices=SUPPORTED_TYPES, help="Only write selected BloodHound object types.")
-    parser.add_argument("--merge", action="store_true", help="Merge with existing JSON files inside --out ZIP instead of replacing them.")
     parser.add_argument("--write-empty", action="store_true", help="Write empty JSON members too. By default empty object types are skipped.")
     parser.add_argument("--timestamped-names", action="store_true", help="Name ZIP members with timestamps, e.g. users_YYYYMMDD_HHMMSS.json.")
     parser.add_argument("--bh-version", type=int, default=BH_VERSION, help="BloodHound JSON meta version. Default follows current SharpHound-style output.")
@@ -2362,7 +2356,7 @@ def main() -> None:
         )
 
         selected_types = args.types or DEFAULT_OUTPUT_TYPES
-        payload = build_zip_payload(args.out, converted, selected_types, merge=args.merge, write_empty=args.write_empty)
+        payload = build_zip_payload(args.out, converted, selected_types, write_empty=args.write_empty)
         collection_methods = DEFAULT_COLLECTION_METHODS | (COLLECTION_METHOD_ACL if args.acl else 0)
         archive_path = write_bh_zip(
             args.out,
