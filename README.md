@@ -3,8 +3,6 @@
 OPSECHound is a BloodHound JSON collector that runs LDAP queries itself instead of parsing ldapsearch logs.
 
 ```bash
-pip3 install ldap3
-
 python3 OPSECHound.py "(objectClass=user)" \
   --dc-ip 192.168.56.10 \
   --base-dn "DC=example,DC=local" \
